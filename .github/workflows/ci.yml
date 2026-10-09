@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  portal:
+    name: portal — tests + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  terraform:
+    name: modules — tofu validate via examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.12.5
+      - name: fmt check
+        run: tofu fmt -check -recursive -diff modules || echo "::warning::tofu fmt reports differences"
+      # The modules read files relative to the calling root module, so they are
+      # validated through the example server folders that call them.
+      - name: validate example deployments
+        run: |
+          for d in deployments/servers/*/; do
+            echo "::group::$d"
+            (cd "$d" && tofu init -backend=false -input=false && tofu validate)
+            echo "::endgroup::"
+          done
+
+  scripts:
+    name: scripts — syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: for f in deployments/scripts/*.sh portal/*.sh; do bash -n "$f" && echo "ok  $f"; done
+
+  leaks:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  denylist:
+    # Optional guard against reintroducing organisation-specific names. The
+    # patterns live in the DENYLIST repository secret (one extended regex per
+    # line) — a denylist committed to the repo would itself leak them.
+    name: org-term denylist
+    runs-on: ubuntu-latest
+    env:
+      DENYLIST: ${{ secrets.DENYLIST }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: scan
+        if: env.DENYLIST != ''
+        run: |
+          printf '%s\n' "$DENYLIST" | sed '/^\s*$/d' > /tmp/deny
+          if grep -rniE -f /tmp/deny --exclude-dir=.git --exclude-dir=node_modules . ; then
+            echo "::error::organisation-specific terms found (see above)"; exit 1
+          fi
+          echo "clean"

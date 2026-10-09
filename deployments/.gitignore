@@ -1,0 +1,18 @@
+# Terraform working files — a local `terraform init/plan` in a server folder
+# must never end up committed (state may contain secrets).
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+plan.cache
+crash.log
+crash.*.log
+
+# CI-generated files
+.terraformrc
+folder_name.txt
+
+# editor/OS noise
+.claude/
+.vscode/
+*.swp

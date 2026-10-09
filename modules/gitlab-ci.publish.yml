@@ -1,0 +1,24 @@
+# Publishes both modules to a GitLab Terraform module registry on every push
+# that touches them. Reference only — GitLab reads a root .gitlab-ci.yml, so
+# include this file from there (or copy it) if you host the modules on GitLab.
+#   main branch   -> version 1.0.<epoch/2> on channel `main`
+#   other branches -> version 0.0.<epoch/2> on channel `<branch>`
+include:
+  - 'modules/Terraform-Module-Upload.yml'
+
+stages:
+  - upload
+
+vsphere-clone-vm:
+  extends: .upload_vmware
+  stage: upload
+  rules:
+    - changes:
+        - modules/vsphere-clone-vm/**/*
+
+proxmox-clone-vm:
+  extends: .upload_pve
+  stage: upload
+  rules:
+    - changes:
+        - modules/proxmox-clone-vm/**/*

@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 1215" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1160" height="1215" fill="#ffffff"/>
+
+  <!-- ───────── title ───────── -->
+  <text x="40" y="42" font-size="21" font-weight="700" fill="#111827">Virtual machine creation flow</text>
+  <text x="40" y="64" font-size="13" fill="#6b7280">portal  ·  deployments  ·  modules  —  vSphere (DC1 / DC2)  &amp;  Proxmox VE</text>
+
+  <!-- ═════════ ① REQUEST ═════════ -->
+  <rect x="40" y="95" width="1080" height="150" rx="10" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5"/>
+  <rect x="60" y="84" width="120" height="24" rx="12" fill="#eff6ff" stroke="#bfdbfe"/>
+  <circle cx="76" cy="96" r="9" fill="#2563eb"/><text x="76" y="100" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">1</text>
+  <text x="92" y="100" font-size="12" font-weight="700" fill="#1d4ed8" letter-spacing="1">REQUEST</text>
+
+  <rect x="70" y="122" width="560" height="105" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="86" y="144" font-size="14" font-weight="700" fill="#111827">VM Portal  (portal/)</text>
+  <text x="86" y="164" font-size="12" fill="#374151">name · team · env · service tag · backup</text>
+  <text x="86" y="181" font-size="12" fill="#374151">OS template (RHEL 9 / 10, Ubuntu)  +  server role (Generic / PostgreSQL 16·17)</text>
+  <text x="86" y="198" font-size="12" fill="#374151">CPU · RAM · disk layout  (mounts auto-wired into cloud-init)</text>
+  <text x="86" y="215" font-size="12" fill="#374151">cluster · datastore · networks + IP CIDR  (live from vCenter)</text>
+
+  <rect x="660" y="122" width="430" height="105" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="676" y="144" font-size="14" font-weight="700" fill="#111827">Manual  (git)</text>
+  <text x="676" y="166" font-size="12" fill="#374151">copy  servers/EXAMPLE/  →  servers/&lt;vm-name&gt;/</text>
+  <text x="676" y="183" font-size="12" fill="#374151">edit  parameters.auto.tfvars  +  user-data.tpl</text>
+  <text x="676" y="200" font-size="12" fill="#374151">push to main</text>
+
+  <line x1="580" y1="245" x2="580" y2="272" stroke="#94a3b8" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- ═════════ ② GIT COMMIT ═════════ -->
+  <rect x="40" y="277" width="1080" height="140" rx="10" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5"/>
+  <rect x="60" y="266" width="252" height="24" rx="12" fill="#eff6ff" stroke="#bfdbfe"/>
+  <circle cx="76" cy="278" r="9" fill="#2563eb"/><text x="76" y="282" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">2</text>
+  <text x="92" y="282" font-size="12" font-weight="700" fill="#1d4ed8" letter-spacing="1">GIT COMMIT — deployments repo</text>
+
+  <rect x="70" y="304" width="450" height="95" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="86" y="326" font-size="13" font-weight="700" fill="#111827" font-family="Consolas, monospace">servers/&lt;vm-name&gt;/</text>
+  <text x="104" y="346" font-size="12" fill="#374151" font-family="Consolas, monospace">main.tf  (module call — version pinned)</text>
+  <text x="104" y="363" font-size="12" fill="#374151" font-family="Consolas, monospace">provider.tf · variables.tf · parameters.auto.tfvars</text>
+  <text x="104" y="380" font-size="12" fill="#374151" font-family="Consolas, monospace">user-data.tpl  (cloud-init)</text>
+
+  <text x="556" y="326" font-size="12.5" font-weight="700" fill="#111827">one folder  =  one VM  =  one Terraform state</text>
+  <text x="556" y="349" font-size="12" fill="#374151">commit message carries the metadata shown in the portal:</text>
+  <text x="556" y="368" font-size="11.5" fill="#6b7280" font-family="Consolas, monospace">feat: provision &lt;vm&gt; on &lt;DC&gt; [team][env][os][cpu][ram][disks]</text>
+
+  <line x1="580" y1="417" x2="580" y2="444" stroke="#94a3b8" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- ═════════ ③ CI PIPELINE ═════════ -->
+  <rect x="40" y="449" width="1080" height="175" rx="10" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5"/>
+  <rect x="60" y="438" width="185" height="24" rx="12" fill="#eff6ff" stroke="#bfdbfe"/>
+  <circle cx="76" cy="450" r="9" fill="#2563eb"/><text x="76" y="454" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">3</text>
+  <text x="92" y="454" font-size="12" font-weight="700" fill="#1d4ed8" letter-spacing="1">GITLAB CI PIPELINE</text>
+
+  <rect x="80" y="480" width="150" height="52" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="155" y="502" font-size="13" font-weight="700" fill="#111827" text-anchor="middle">getfolder</text>
+  <text x="155" y="519" font-size="11" fill="#6b7280" text-anchor="middle">detect changed folder</text>
+  <line x1="232" y1="506" x2="258" y2="506" stroke="#94a3b8" stroke-width="2" marker-end="url(#arr)"/>
+
+  <rect x="262" y="480" width="150" height="52" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="337" y="502" font-size="13" font-weight="700" fill="#111827" text-anchor="middle">validate</text>
+  <text x="337" y="519" font-size="11" fill="#6b7280" text-anchor="middle">tofu init + validate</text>
+  <line x1="414" y1="506" x2="440" y2="506" stroke="#94a3b8" stroke-width="2" marker-end="url(#arr)"/>
+
+  <rect x="444" y="480" width="150" height="52" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="519" y="502" font-size="13" font-weight="700" fill="#111827" text-anchor="middle">plan</text>
+  <text x="519" y="519" font-size="11" fill="#6b7280" text-anchor="middle">tofu plan</text>
+  <line x1="596" y1="506" x2="622" y2="506" stroke="#94a3b8" stroke-width="2" marker-end="url(#arr)"/>
+
+  <rect x="626" y="480" width="200" height="52" rx="8" fill="#fffbeb" stroke="#fde047" stroke-width="1.5"/>
+  <text x="726" y="502" font-size="13" font-weight="700" fill="#a16207" text-anchor="middle">apply  —  manual gate</text>
+  <text x="726" y="519" font-size="11" fill="#a16207" text-anchor="middle">human clicks ▶ in GitLab UI</text>
+
+  <rect x="80" y="556" width="310" height="26" rx="13" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="235" y="573" font-size="11.5" fill="#374151" text-anchor="middle">state: GitLab Terraform state, named &lt;folder&gt;</text>
+  <rect x="400" y="556" width="395" height="26" rx="13" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="597" y="573" font-size="11.5" fill="#374151" text-anchor="middle">module from registry gitlab.example.internal — version pinned in main.tf</text>
+  <rect x="805" y="556" width="273" height="26" rx="13" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="941" y="573" font-size="11.5" fill="#374151" text-anchor="middle">credentials: TF_VAR_CI_TF_*  CI variables</text>
+
+  <line x1="580" y1="624" x2="580" y2="651" stroke="#94a3b8" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- ═════════ ④ TERRAFORM APPLY ═════════ -->
+  <rect x="40" y="656" width="1080" height="205" rx="10" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5"/>
+  <rect x="60" y="645" width="420" height="24" rx="12" fill="#eff6ff" stroke="#bfdbfe"/>
+  <circle cx="76" cy="657" r="9" fill="#2563eb"/><text x="76" y="661" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">4</text>
+  <text x="92" y="661" font-size="12" font-weight="700" fill="#1d4ed8" letter-spacing="1">TERRAFORM APPLY — modules vsphere- / proxmox-clone-vm</text>
+
+  <rect x="70" y="688" width="195" height="90" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="82" y="710" font-size="12.5" font-weight="700" fill="#111827">Infoblox DDI</text>
+  <text x="82" y="729" font-size="11.5" fill="#374151">allocate IP from CIDR,</text>
+  <text x="82" y="745" font-size="11.5" fill="#374151">create DNS record</text>
+  <text x="82" y="761" font-size="11.5" fill="#374151">(per NIC)</text>
+
+  <rect x="277" y="688" width="195" height="90" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="289" y="710" font-size="12.5" font-weight="700" fill="#111827">Clone VM</text>
+  <text x="289" y="729" font-size="11.5" fill="#374151">vSphere template</text>
+  <text x="289" y="745" font-size="11.5" fill="#374151">(DC1 / DC2)  or</text>
+  <text x="289" y="761" font-size="11.5" fill="#374151">PVE clone_vm_id</text>
+
+  <rect x="484" y="688" width="195" height="90" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="496" y="710" font-size="12.5" font-weight="700" fill="#111827">Configure</text>
+  <text x="496" y="729" font-size="11.5" fill="#374151">CPU · RAM · disks</text>
+  <text x="496" y="745" font-size="11.5" fill="#374151">NICs + static IPs,</text>
+  <text x="496" y="761" font-size="11.5" fill="#374151">netmask from CIDR</text>
+
+  <rect x="691" y="688" width="195" height="90" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="703" y="710" font-size="12.5" font-weight="700" fill="#111827">Root password</text>
+  <text x="703" y="729" font-size="11.5" fill="#374151">random per VM,</text>
+  <text x="703" y="745" font-size="11.5" fill="#374151">delivered via cloud-init,</text>
+  <text x="703" y="761" font-size="11.5" fill="#374151">stored in Vault (KV v2)</text>
+
+  <rect x="898" y="688" width="195" height="90" rx="8" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="910" y="710" font-size="12.5" font-weight="700" fill="#111827">Inject cloud-init</text>
+  <text x="910" y="729" font-size="11.5" fill="#374151">user-data.tpl rendered</text>
+  <text x="910" y="745" font-size="11.5" fill="#374151">per VM: guestinfo</text>
+  <text x="910" y="761" font-size="11.5" fill="#374151">or PVE snippet</text>
+
+  <rect x="70" y="800" width="90" height="24" rx="12" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="115" y="816" font-size="11" fill="#c2410c" text-anchor="middle">ipam.example.internal</text>
+  <rect x="277" y="800" width="200" height="24" rx="12" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="377" y="816" font-size="11" fill="#c2410c" text-anchor="middle">vCenter DC1 · DC2  /  Proxmox</text>
+  <rect x="691" y="800" width="110" height="24" rx="12" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="746" y="816" font-size="11" fill="#c2410c" text-anchor="middle">vault.example.internal</text>
+
+  <line x1="580" y1="861" x2="580" y2="888" stroke="#94a3b8" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- ═════════ ⑤ FIRST BOOT ═════════ -->
+  <rect x="40" y="893" width="1080" height="185" rx="10" fill="#ffffff" stroke="#e5e7eb" stroke-width="1.5"/>
+  <rect x="60" y="882" width="318" height="24" rx="12" fill="#eff6ff" stroke="#bfdbfe"/>
+  <circle cx="76" cy="894" r="9" fill="#2563eb"/><text x="76" y="898" font-size="11" font-weight="700" fill="#ffffff" text-anchor="middle">5</text>
+  <text x="92" y="898" font-size="12" font-weight="700" fill="#1d4ed8" letter-spacing="1">FIRST BOOT — cloud-init (runs once)</text>
+
+  <text x="86" y="932" font-size="12" fill="#374151">•  admin users + SSH keys  (directory: files.example.internal/ssh)</text>
+  <text x="86" y="953" font-size="12" fill="#374151">•  base packages · mail relay · DNS cache · persistent journal</text>
+  <text x="86" y="974" font-size="12" fill="#374151">•  monitoring agent: Grafana Alloy  (pushes metrics, remote write)</text>
+
+  <text x="600" y="932" font-size="12" fill="#374151">•  extra disks: fs_setup + mounts  (layout from the portal)</text>
+  <text x="600" y="953" font-size="12" fill="#374151">•  role software: e.g. PostgreSQL 16 / 17  (Satellite repos)</text>
+  <text x="600" y="974" font-size="12" fill="#374151">•  disables itself when finished healthy</text>
+
+  <rect x="70" y="1000" width="1020" height="52" rx="8" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+  <text x="86" y="1022" font-size="12" font-weight="700" fill="#92400e">⚠  user-data.tpl runs on first boot only.</text>
+  <text x="86" y="1041" font-size="12" fill="#92400e">Editing it after the VM exists changes nothing — Terraform ignores user-data changes on purpose, so the VM is not recreated.</text>
+
+  <line x1="580" y1="1078" x2="580" y2="1105" stroke="#94a3b8" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- ═════════ VM READY ═════════ -->
+  <rect x="40" y="1110" width="1080" height="72" rx="10" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5"/>
+  <text x="580" y="1140" font-size="16" font-weight="700" fill="#15803d" text-anchor="middle">✓  VM ready</text>
+  <text x="580" y="1162" font-size="12.5" fill="#15803d" text-anchor="middle">FQDN + IP in DNS (Infoblox)   ·   root password in Vault   ·   metrics pushed by Alloy   ·   SSH with admin keys</text>
+</svg>

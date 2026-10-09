@@ -1,0 +1,24 @@
+# secrets / local config
+portal/portal.env
+*.env
+!*.env.example
+.terraformrc
+
+# build output and dependencies
+node_modules/
+dist/
+portal/.build-number
+
+# terraform / opentofu
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+plan.cache
+*.tfplan
+
+# editors / tooling
+.claude/
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,420 @@
+variables:
+  TF_CLI_CONFIG_FILE: .terraformrc
+  FOLDER_NAME_FILE: "folder_name.txt"
+  CONF_DIRS: "servers"
+  DELETED_DIR: "deleted"
+  TEMP_ARTIFACT_DIR: "$CI_PROJECT_DIR/tmp/terraform_data"
+  DESTROY_VM_FILE: "destroy_vm.txt"
+  DESTROY_DIR_FILE: "destroy_dir.txt"
+  DESTROY_ARTIFACT_DIR: "$CI_PROJECT_DIR/tmp/terraform_destroy"
+
+default:
+  # gitlab-opentofu = OpenTofu 1.12.5 + the gitlab-tofu wrapper + bash/curl/git/jq.
+  # Mirror of registry.gitlab.com/components/opentofu/gitlab-opentofu:4.8.1-opentofu1.12.5-debian
+  # DEBIAN, not alpine: the alpine variant ships no bash, and every script in
+  # scripts/ is #!/bin/bash.
+  # The plain opentofu image does NOT work here: its ENTRYPOINT is tofu itself,
+  # so GitLab's `sh -c ...` becomes `tofu sh -c ...` ("no command named sh"),
+  # and it has no curl/jq and no gitlab-* wrapper.
+  image: "registry.example.internal/gitlab/components/opentofu/gitlab-opentofu:4.8.1-opentofu1.12.5-debian"
+  tags:
+    - docker
+
+stages:
+  - getfolder
+  - validate
+  - plan
+  - apply
+  - postconfig
+  - getdeleted
+  - destroy-plan
+  - destroy
+  - cleanup
+
+.terraform_common: &terraform_common
+  - export FOLDER_NAME=$(cat $FOLDER_NAME_FILE)  # Load folder name from file
+  # Deletion-only commits produce an empty folder name — nothing to do here.
+  - |
+    if [ -z "$FOLDER_NAME" ]; then
+      echo "No created/modified terraform files under $CONF_DIRS/ — nothing to do."
+      exit 0
+    fi
+  # One GitLab-managed state per server folder.
+  # MUST be GITLAB_TOFU_STATE_NAME: gitlab-tofu ignores the old TF_STATE_NAME
+  # entirely and falls back to a state literally named "default" — every VM
+  # would then share one state and applying VM B would plan to destroy VM A.
+  - export GITLAB_TOFU_STATE_NAME=$FOLDER_NAME
+
+# Selects the PVE cluster's credentials for the folder being worked on.
+# Each PVE folder pins its cluster in tfvars (pve_cluster = "live"); this maps
+# that key to the PVE_CI_TOKEN_<key> / PVE_CI_SSH_KEY_<key> CI variables and
+# exports them under the TF_VAR_* names the provider reads. A single global
+# token cannot serve two clusters — their credentials differ.
+#
+# NO FALLBACK, deliberately: if the per-cluster variables are missing this
+# fails loudly rather than quietly authenticating against the wrong cluster.
+# Adding a cluster = one PVE_ENDPOINTS entry in the portal + two CI variables
+# here; no change to this file.
+# TFDIR defaults to the create/update folder; destroy jobs point it at the archive.
+.pve_select_creds: &pve_select_creds
+  - |
+    TFDIR="${TFDIR:-$CONF_DIRS/$FOLDER_NAME}"
+    TFVARS="$TFDIR/parameters.auto.tfvars"
+    # CI_TF_PVE_ENDPOINT is written into every PVE folder by the portal, so its
+    # presence is what marks a folder as PVE. vSphere folders skip all of this.
+    if grep -qE '^[[:space:]]*CI_TF_PVE_ENDPOINT[[:space:]]*=' "$TFVARS" 2>/dev/null; then
+      PVE_CLUSTER=$(grep -E '^[[:space:]]*pve_cluster[[:space:]]*=' "$TFVARS" | head -1 | cut -d'"' -f2 || true)
+      if [ -z "$PVE_CLUSTER" ]; then
+        echo "ERROR: $TFVARS is a PVE folder but has no pve_cluster line."
+        echo "Add the cluster key it belongs to, e.g.:  pve_cluster           = \"test\""
+        echo "Valid keys are the PVE_ENDPOINTS keys in the portal (test, live, ...)."
+        exit 1
+      fi
+      # The key is interpolated into an eval below and comes from a file in
+      # git — refuse anything that is not a plain identifier.
+      case "$PVE_CLUSTER" in
+        *[!A-Za-z0-9_]*)
+          echo "ERROR: pve_cluster must match [A-Za-z0-9_], got: $PVE_CLUSTER"
+          exit 1 ;;
+      esac
+      echo "PVE cluster for this folder: $PVE_CLUSTER"
+      _tok=$(eval "printf '%s' \"\${PVE_CI_TOKEN_${PVE_CLUSTER}:-}\"")
+      _key=$(eval "printf '%s' \"\${PVE_CI_SSH_KEY_${PVE_CLUSTER}:-}\"")
+      _missing=""
+      [ -n "$_tok" ] || _missing="PVE_CI_TOKEN_$PVE_CLUSTER"
+      [ -n "$_key" ] || _missing="$_missing PVE_CI_SSH_KEY_$PVE_CLUSTER"
+      if [ -n "$_missing" ]; then
+        echo "ERROR: missing CI/CD variable(s) for PVE cluster '$PVE_CLUSTER':$_missing"
+        echo "Add them under Settings > CI/CD > Variables (mask the token)."
+        echo "Names must be exact — they are read by this script, not by tofu,"
+        echo "so they carry NO TF_VAR_ prefix."
+        exit 1
+      fi
+      export TF_VAR_CI_TF_PVE_API_TOKEN="$_tok"
+      export TF_VAR_CI_TF_PVE_SSH_PRIVATE_KEY="$_key"
+      echo "  API token:  PVE_CI_TOKEN_$PVE_CLUSTER"
+      echo "  SSH key:    PVE_CI_SSH_KEY_$PVE_CLUSTER"
+      unset _tok _key _missing
+    fi
+
+getfolder:
+  stage: getfolder
+  script:
+    - echo $CI_COMMIT_SHA
+    # get folder name where new changes are made
+    # --diff-filter=d excludes deleted files: removing a folder must not start
+    # a create/update pipeline for it (previously init ran in a directory that
+    # no longer existed).
+    - |
+      if [ "$CI_COMMIT_BEFORE_SHA" == "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$CI_COMMIT_BEFORE_SHA" 2>/dev/null; then
+        # new branch, or force-push rewrote history and BEFORE_SHA no longer
+        # exists — fall back to the files of the last commit only
+        export FOLDER_NAME=$(git diff-tree --no-renames --no-commit-id -r --name-only --diff-filter=d HEAD | grep "^$CONF_DIRS/" | cut -d '/' -f 2 | sort -u)
+      else
+        export FOLDER_NAME=$(git diff --no-renames --name-only --diff-filter=d $CI_COMMIT_BEFORE_SHA $CI_COMMIT_SHA | grep "^$CONF_DIRS/" | cut -d '/' -f 2 | sort -u)
+      fi
+    - echo $FOLDER_NAME
+    # Later stages cd into a single folder and use it as the state name — a
+    # push touching several server folders would silently mangle both. Fail
+    # loudly instead of doing the wrong thing.
+    - |
+      COUNT=$(echo "$FOLDER_NAME" | grep -c . || true)
+      if [ "$COUNT" -gt 1 ]; then
+        echo "ERROR: this push changes files in $COUNT server folders:"
+        echo "$FOLDER_NAME"
+        echo "The pipeline handles one folder per push — commit and push each server separately."
+        exit 1
+      fi
+      if [ "$COUNT" -eq 0 ]; then
+        echo "Only deletions under $CONF_DIRS/ — downstream stages will skip."
+      fi
+    - echo $FOLDER_NAME > $FOLDER_NAME_FILE   # Store folder name where terraform conf is read
+  rules:
+    - changes:
+        # does not expand variables here, so must use static dir
+        - servers/**/*.tf
+        - servers/**/*.tfvars
+  
+  artifacts:
+    paths:
+      - $FOLDER_NAME_FILE
+
+validate:
+  stage: validate
+  script:
+    - *terraform_common
+    - *pve_select_creds
+    # create temp dir for cache
+    - mkdir -p "$TEMP_ARTIFACT_DIR"
+    - cd "$CONF_DIRS/$FOLDER_NAME"
+    # Create .terraformrc (TF_CLI_CONFIG_FILE) file for authentication
+    - |
+      cat <<EOF > .terraformrc
+      credentials "$CI_SERVER_HOST" {
+        token = "$CI_JOB_TOKEN"
+      }
+      EOF
+
+    - gitlab-tofu init -backend=true -upgrade=true
+    #- gitlab-tofu init -backend=false -upgrade=true
+    - gitlab-tofu validate
+    - cp -r .terraform $TEMP_ARTIFACT_DIR
+    - cp .terraformrc $TEMP_ARTIFACT_DIR
+  rules:
+    - changes:
+        - servers/**/*.tf
+        - servers/**/*.tfvars
+  artifacts:
+    paths:
+      - $FOLDER_NAME_FILE
+      - $TEMP_ARTIFACT_DIR/.terraform
+      - $TEMP_ARTIFACT_DIR/.terraformrc
+
+plan:
+  stage: plan
+  needs:
+    - validate
+  script:
+    - *terraform_common
+    - *pve_select_creds
+    - cp -r "$TEMP_ARTIFACT_DIR/.terraform" "$CONF_DIRS/$FOLDER_NAME"
+    - cp "$TEMP_ARTIFACT_DIR/.terraformrc" "$CONF_DIRS/$FOLDER_NAME"
+    - cd "$CONF_DIRS/$FOLDER_NAME"
+    #- export TF_LOG=DEBUG
+    - gitlab-tofu plan
+    - cp plan.cache $TEMP_ARTIFACT_DIR
+  rules:
+    - changes:
+        - servers/**/*.tf
+        - servers/**/*.tfvars
+  artifacts:
+    reports:
+      terraform: $TEMP_ARTIFACT_DIR/plan.cache
+    paths:
+      - $FOLDER_NAME_FILE
+      - $TEMP_ARTIFACT_DIR/.terraform
+      - $TEMP_ARTIFACT_DIR/.terraformrc
+      - $TEMP_ARTIFACT_DIR/plan.cache
+
+apply:
+  stage: apply
+  needs:
+    - plan
+  script:
+    - *terraform_common
+    - *pve_select_creds
+    - cp -r "$TEMP_ARTIFACT_DIR/.terraform" "$CONF_DIRS/$FOLDER_NAME"
+    - cp "$TEMP_ARTIFACT_DIR/.terraformrc" "$CONF_DIRS/$FOLDER_NAME"
+    - cp "$TEMP_ARTIFACT_DIR/plan.cache" "$CONF_DIRS/$FOLDER_NAME"
+    - cd "$CONF_DIRS/$FOLDER_NAME"
+    - gitlab-tofu apply
+  when: manual
+  rules:
+    - changes:
+        - servers/**/*.tf
+        - servers/**/*.tfvars
+  artifacts:
+    paths:
+      - $FOLDER_NAME_FILE
+      - $TEMP_ARTIFACT_DIR/.terraform
+      - $TEMP_ARTIFACT_DIR/.terraformrc
+      - $TEMP_ARTIFACT_DIR/plan.cache
+
+# Satellite host group / host collection assignment. The VM registers itself
+# via cloud-init (activation key) minutes after apply — activation keys cannot
+# set a host group and we don't want a key per collection, so this job waits
+# for the registration and assigns both via the Satellite API. Runs only when
+# the folder's tfvars define satellite_hostgroup / satellite_host_collection
+# (RHEL VMs — Ubuntu never registers for now and should leave both empty).
+# host_collecton is for automatic updates
+postconfig:
+  stage: postconfig
+  needs:
+    - apply
+  # Non-critical: the VM itself is already built and working. This only places
+  # it in a Satellite host group / collection, which can also be done by hand
+  # in the Satellite UI. Common causes of failure are outside our control —
+  # the VM hasn't finished registering yet, or the Satellite API user
+  # lacks permissions — so a red pipeline here would be noise, not a signal.
+  # The job still shows as failed (with the script's ERROR banner) for anyone
+  # who looks; it just no longer fails the pipeline.
+  allow_failure: true
+  script:
+    - *terraform_common
+    - HG=$(grep -E '^\s*satellite_hostgroup' "$CONF_DIRS/$FOLDER_NAME/parameters.auto.tfvars" | head -1 | cut -d'"' -f2 || true)
+    - HC=$(grep -E '^\s*satellite_host_collection' "$CONF_DIRS/$FOLDER_NAME/parameters.auto.tfvars" | head -1 | cut -d'"' -f2 || true)
+    - |
+      if [ -z "$HG" ] && [ -z "$HC" ]; then
+        echo "No satellite_hostgroup / satellite_host_collection in tfvars — nothing to do."
+        exit 0
+      fi
+    - NAME=$(grep -E '^\s*vm_name' "$CONF_DIRS/$FOLDER_NAME/parameters.auto.tfvars" | head -1 | cut -d'"' -f2 || true)
+    - DOM=$(grep -E '^\s*vm_domain' "$CONF_DIRS/$FOLDER_NAME/parameters.auto.tfvars" | head -1 | cut -d'"' -f2 || true)
+    - ./scripts/satellite_host_configure.sh "$NAME" "$DOM" "$HG" "$HC"
+  rules:
+    - changes:
+        - servers/**/*.tf
+        - servers/**/*.tfvars
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VM DELETION FLOW
+#
+# Trigger: a folder is MOVED from servers/<vm> to deleted/<vm>:
+#     git mv servers/<vm> deleted/<vm>   (or the vm-form "Delete VM" button)
+#
+# The archived copy under deleted/ is both the destroy working directory and
+# the permanent record of the VM's configuration. It must stay exactly one
+# level deep (deleted/<name>/) — the module resolves ../../scripts from there.
+# On name collision (VM recreated and deleted again) suffix the archive folder
+# (deleted/<name>_2026-08-03); the state name is taken from what vanished from
+# servers/, not from the archive name.
+# ─────────────────────────────────────────────────────────────────────────────
+
+getdeleted:
+  stage: getdeleted
+  needs: []          # runs immediately, independent of the create-flow stages
+  script:
+    # always produce the artifact files so downstream jobs can no-op cleanly
+    - echo "" > $DESTROY_VM_FILE
+    - echo "" > $DESTROY_DIR_FILE
+    - |
+      if [ "$CI_COMMIT_BEFORE_SHA" == "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$CI_COMMIT_BEFORE_SHA" 2>/dev/null; then
+        DELETED=$(git diff-tree --no-renames --no-commit-id -r --name-only --diff-filter=D HEAD | grep "^$CONF_DIRS/" | cut -d '/' -f 2 | sort -u || true)
+        ARCHIVE=$(git diff-tree --no-renames --no-commit-id -r --name-only --diff-filter=A HEAD | grep "^$DELETED_DIR/" | cut -d '/' -f 2 | sort -u | head -1 || true)
+      else
+        DELETED=$(git diff --no-renames --name-only --diff-filter=D $CI_COMMIT_BEFORE_SHA $CI_COMMIT_SHA | grep "^$CONF_DIRS/" | cut -d '/' -f 2 | sort -u || true)
+        ARCHIVE=$(git diff --no-renames --name-only --diff-filter=A $CI_COMMIT_BEFORE_SHA $CI_COMMIT_SHA | grep "^$DELETED_DIR/" | cut -d '/' -f 2 | sort -u | head -1 || true)
+      fi
+      COUNT=$(echo "$DELETED" | grep -c . || true)
+      if [ "$COUNT" -eq 0 ]; then
+        echo "No folder removed from $CONF_DIRS/ — nothing to destroy."
+        exit 0
+      fi
+      if [ "$COUNT" -gt 1 ]; then
+        echo "ERROR: this push removes $COUNT folders from $CONF_DIRS/:"
+        echo "$DELETED"
+        echo "Decommission one VM per push."
+        exit 1
+      fi
+      if [ -z "$ARCHIVE" ] || [ ! -f "$DELETED_DIR/$ARCHIVE/main.tf" ]; then
+        echo "ERROR: $CONF_DIRS/$DELETED was deleted but no archived copy was added under $DELETED_DIR/."
+        echo "Never plain-delete a server folder — move it instead:"
+        echo "    git mv $CONF_DIRS/$DELETED $DELETED_DIR/$DELETED"
+        echo "The archived copy is required to run terraform destroy (and is your record of the VM)."
+        exit 1
+      fi
+      echo "Will destroy VM '$DELETED' using config in $DELETED_DIR/$ARCHIVE/"
+      echo "$DELETED" > $DESTROY_VM_FILE
+      echo "$ARCHIVE" > $DESTROY_DIR_FILE
+  rules:
+    # deleted/** for the actual decommission; servers/** so a plain deletion
+    # without an archive fails loudly instead of silently orphaning the state
+    - changes:
+        - deleted/**/*
+        - servers/**/*.tf
+        - servers/**/*.tfvars
+  artifacts:
+    paths:
+      - $DESTROY_VM_FILE
+      - $DESTROY_DIR_FILE
+
+destroy-plan:
+  stage: destroy-plan
+  needs:
+    - getdeleted
+  script:
+    - export VM=$(cat $DESTROY_VM_FILE)
+    - export DDIR=$(cat $DESTROY_DIR_FILE)
+    - |
+      if [ -z "$VM" ]; then echo "Nothing to destroy."; exit 0; fi
+    - export GITLAB_TOFU_STATE_NAME=$VM
+    - export TFDIR="$DELETED_DIR/$DDIR"
+    - *pve_select_creds
+    - mkdir -p "$DESTROY_ARTIFACT_DIR"
+    - cd "$DELETED_DIR/$DDIR"
+    - |
+      cat <<EOF > .terraformrc
+      credentials "$CI_SERVER_HOST" {
+        token = "$CI_JOB_TOKEN"
+      }
+      EOF
+    - gitlab-tofu init -backend=true
+    - gitlab-tofu plan -destroy
+    # A destroy plan must never CREATE anything — abort if it tries.
+    - |
+      if tofu show -json plan.cache | grep -o '"actions":\[[^]]*\]' | grep -q 'create'; then
+        echo "ERROR: destroy plan wants to CREATE resources — aborting."
+        exit 1
+      fi
+    - cp -r .terraform "$DESTROY_ARTIFACT_DIR"
+    - cp .terraformrc plan.cache "$DESTROY_ARTIFACT_DIR"
+  rules:
+    - changes:
+        - deleted/**/*
+  artifacts:
+    reports:
+      terraform: $DESTROY_ARTIFACT_DIR/plan.cache
+    paths:
+      - $DESTROY_VM_FILE
+      - $DESTROY_DIR_FILE
+      - $DESTROY_ARTIFACT_DIR/.terraform
+      - $DESTROY_ARTIFACT_DIR/.terraformrc
+      - $DESTROY_ARTIFACT_DIR/plan.cache
+
+destroy:
+  stage: destroy
+  needs:
+    - destroy-plan
+  when: manual
+  allow_failure: false      # pipeline shows "blocked" until a human decides
+  script:
+    - export VM=$(cat $DESTROY_VM_FILE)
+    - export DDIR=$(cat $DESTROY_DIR_FILE)
+    - |
+      if [ -z "$VM" ]; then echo "Nothing to destroy."; exit 0; fi
+    - export GITLAB_TOFU_STATE_NAME=$VM
+    - export TFDIR="$DELETED_DIR/$DDIR"
+    - *pve_select_creds
+    - cp -r "$DESTROY_ARTIFACT_DIR/.terraform" "$DELETED_DIR/$DDIR"
+    - cp "$DESTROY_ARTIFACT_DIR/.terraformrc" "$DESTROY_ARTIFACT_DIR/plan.cache" "$DELETED_DIR/$DDIR"
+    - cd "$DELETED_DIR/$DDIR"
+    - gitlab-tofu apply
+  rules:
+    - changes:
+        - deleted/**/*
+  artifacts:
+    paths:
+      - $DESTROY_VM_FILE
+      - $DESTROY_DIR_FILE
+
+cleanup:
+  stage: cleanup
+  needs:
+    - destroy
+  script:
+    - export VM=$(cat $DESTROY_VM_FILE)
+    - export DDIR=$(cat $DESTROY_DIR_FILE)
+    - |
+      if [ -z "$VM" ]; then echo "Nothing to clean up."; exit 0; fi
+    # The registered host name is vm_name.vm_domain from tfvars, NOT the folder name.
+    - NAME=$(grep -E '^\s*vm_name' "$DELETED_DIR/$DDIR/parameters.auto.tfvars" | head -1 | cut -d'"' -f2 || true)
+    - DOM=$(grep -E '^\s*vm_domain' "$DELETED_DIR/$DDIR/parameters.auto.tfvars" | head -1 | cut -d'"' -f2 || true)
+    # RHEL only in practice — silent no-op (404) for Ubuntu VMs
+    - ./scripts/satellite_host_delete.sh "$NAME" "$DOM"
+    # Remove the (now empty) state file from GitLab. 
+    # The Vault secret is kept on purpose: it is history, and still valid if the VM is restored from backup.
+    - |
+      HTTP=$(curl -k -s -o /dev/null -w '%{http_code}' -X DELETE \
+        --user "gitlab-ci-token:$CI_JOB_TOKEN" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/$VM" || true)
+      case "$HTTP" in
+        2*) echo "Terraform state '$VM' deleted." ;;
+        *)  echo "##############################################################"
+            echo "# WARNING: could not delete Terraform state '$VM' (HTTP $HTTP)"
+            echo "# Delete it manually: Operate -> Terraform states"
+            echo "##############################################################" ;;
+      esac
+  rules:
+    - changes:
+        - deleted/**/*
+

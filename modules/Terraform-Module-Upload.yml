@@ -1,0 +1,31 @@
+.terraform_module_upload:
+  image: curlimages/curl:7.82.0
+  variables:
+    TERRAFORM_MODULE_MINOR_VERSION: 0
+  script:
+    - |
+      epoh_time=$(date +%s | awk '{print int($1/2)}')
+      if [ "${CI_COMMIT_REF_NAME}" == "main" ]
+      then
+        export TERRAFORM_MODULE_VERSION=1.${TERRAFORM_MODULE_MINOR_VERSION}.${epoh_time}
+      else
+        export TERRAFORM_MODULE_VERSION=0.${TERRAFORM_MODULE_MINOR_VERSION}.${epoh_time}
+      fi
+    - echo "$TERRAFORM_MODULE_VERSION"
+    - tar -cvzf ${TERRAFORM_MODULE_NAME}-${TERRAFORM_MODULE_SYSTEM}-${TERRAFORM_MODULE_VERSION}.tgz -C ${TERRAFORM_MODULE_DIR} --exclude=./.git --exclude=./.gitlab-ci.yml .
+    - 'curl -k --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file ${TERRAFORM_MODULE_NAME}-${TERRAFORM_MODULE_SYSTEM}-${TERRAFORM_MODULE_VERSION}.tgz ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/terraform/modules/${TERRAFORM_MODULE_NAME}/${TERRAFORM_MODULE_SYSTEM}/${TERRAFORM_MODULE_VERSION}/file'
+    - echo "Created module ${CI_PROJECT_URL}/${TERRAFORM_MODULE_SYSTEM} version ${TERRAFORM_MODULE_VERSION}" | sed "s#https://##g"
+
+.upload_vmware:
+  extends: .terraform_module_upload
+  variables:
+    TERRAFORM_MODULE_DIR: ${CI_PROJECT_DIR}/modules/vsphere-clone-vm
+    TERRAFORM_MODULE_NAME: vsphere-clone-vm
+    TERRAFORM_MODULE_SYSTEM: ${CI_COMMIT_REF_NAME}
+
+.upload_pve:
+  extends: .terraform_module_upload
+  variables:
+    TERRAFORM_MODULE_DIR: ${CI_PROJECT_DIR}/modules/proxmox-clone-vm
+    TERRAFORM_MODULE_NAME: proxmox-clone-vm
+    TERRAFORM_MODULE_SYSTEM: ${CI_COMMIT_REF_NAME}

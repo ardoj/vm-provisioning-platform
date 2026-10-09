@@ -1,0 +1,122 @@
+import { renderUsers } from "./userdata.shared.js";
+import { certWriteFiles } from "./certs.js";
+import {
+  cloudConfigHeader,
+  packageUpdateBlock,
+  ntpBlock,
+  timezoneLine,
+  adminsAndUsersHeader,
+  commonPackageLines,
+  sudoersWriteFile,
+  bashHistoryWriteFile,
+  alloyConfWriteFile,
+  alloyRepoWriteFiles,
+  resolvedDropInWriteFile,
+  groupAndHostnameRuncmd,
+  setRootPasswordRuncmd,
+  alloyRuncmd,
+} from "./userdata.common.js";
+import { diskBlocks, mountpointMkdirLines, DEFAULT_DEVICE_PREFIX } from "./userdata.disks.js";
+import { profileRuncmd, profilePackages, profileWriteFiles, defaultDisks, PG_DEFAULT_VERSION } from "./profiles.js";
+
+export function ubuntuUserData(users, opts = {}) {
+  const usersYaml = renderUsers(users);
+  const {
+    profile = "generic",
+    pgVersion = PG_DEFAULT_VERSION,
+    devicePrefix = DEFAULT_DEVICE_PREFIX,
+  } = opts;
+  const disks = opts.disks ?? defaultDisks(profile, "ubuntu");
+  const ctx = { osFamily: "ubuntu", elMajor: null, pgVersion };
+
+  const lines = [
+    ...cloudConfigHeader,
+    "",
+    ...packageUpdateBlock(true),
+    "",
+    ...ntpBlock("systemd-timesyncd"),
+    "",
+    ...diskBlocks(disks, devicePrefix),
+    "",
+    "",
+    timezoneLine,
+    "",
+    ...adminsAndUsersHeader,
+    usersYaml,
+    "",
+    "packages:",
+    ...commonPackageLines,
+    "  - lsof",
+    "# mail",
+    "  - mailutils",
+    "# dns cache",
+    "#  - systemd-resolved",
+    "# get needs-restarting bin",
+    "  - needrestart",
+    "# monitoring agent",
+    "  - alloy",
+    "  - ca-certificates",
+    "  - curl",
+    ...profilePackages(profile, ctx),
+    "",
+    "",
+    "# passwordless admins group",
+    "write_files:",
+    ...sudoersWriteFile,
+    "",
+    ...bashHistoryWriteFile(false),
+    "",
+    ...certWriteFiles("/usr/local/share/ca-certificates"),
+    "",
+    ...alloyConfWriteFile,
+    "",
+    ...alloyRepoWriteFiles("deb"),
+    "",
+    ...resolvedDropInWriteFile(),
+    "",
+    "  - path: /etc/apt/apt.conf.d/proxy.conf",
+    "    content: |",
+    "      Acquire::http::Proxy \"http://proxy.example.internal:3128\";",
+    "      Acquire::https::Proxy \"http://proxy.example.internal:3128\";",
+    ...profileWriteFiles(profile, ctx),
+    "",
+    "runcmd:",
+    ...mountpointMkdirLines(disks),
+    ...groupAndHostnameRuncmd,
+    "# remove template cleanup script",
+    "  - rm -f /root/clean_vm.sh",
+    setRootPasswordRuncmd,
+    "# certs",
+    "  - [ update-ca-certificates ]",
+    "# mail",
+    "  - sed -i \"/^relayhost/c\\relayhost = smtp.example.internal\" /etc/postfix/main.cf && grep -q \"^relayhost\" /etc/postfix/main.cf || echo \"relayhost = smtp.example.internal\" >> /etc/postfix/main.cf",
+    "  - sed -i \"/^mydomain/c\\mydomain = example.internal\" /etc/postfix/main.cf && grep -q \"^mydomain\" /etc/postfix/main.cf || echo \"mydomain = example.internal\" >> /etc/postfix/main.cf",
+    "  - [ /bin/sed, -i, '/^\\#root/a root:    root-alerts@example.com', /etc/aliases ]",
+    "  - |",
+    "    #!/bin/bash",
+    "    sed -i \"/^root/c\\root:    root-alerts@example.com\" /etc/aliases",
+    "    if ! grep -q \"^root\" /etc/aliases; then",
+    "      echo \"root:    root-alerts@example.com\" >> /etc/aliases",
+    "    fi",
+    "  - [ /usr/bin/newaliases ]",
+    "  - [ /bin/systemctl, enable, postfix ]",
+    "  - [ /bin/systemctl, start, postfix ]",
+    "  - [ /bin/systemctl, restart, postfix ]",
+    "# DNS cache",
+    "  - [ /bin/systemctl, enable, systemd-resolved ]",
+    "  - [ /bin/systemctl, start, systemd-resolved ]",
+    "  - [ /bin/sh, -c, \"if [ -f /run/systemd/resolve/stub-resolv.conf ]; then /usr/bin/mv /etc/resolv.conf /etc/resolv.conf.backup; fi\" ]",
+    "  - [ /bin/sh, -c, \"if [ -f /run/systemd/resolve/stub-resolv.conf ]; then /usr/bin/ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf; fi\" ]",
+    ...alloyRuncmd("systemctl"),
+    ...profileRuncmd(profile, ctx),
+    "# reboot checks",
+    "  - /bin/sh -c \"if ! [ -f /run/systemd/resolve/stub-resolv.conf ]; then /usr/bin/cloud-init clean && /sbin/reboot; fi\"",
+    // Docker hosts gate the "done" marker on docker actually being installed —
+    // the reboot retries the packages phase once the apt keyring (fetched in
+    // runcmd above) is on disk. Generic hosts just finish.
+    ...(profile === "docker"
+      ? ["  - /bin/sh -c \"if [ ! -x /usr/bin/docker ]; then /usr/bin/cloud-init clean && reboot; else /usr/bin/touch /etc/cloud/cloud-init.disabled; fi\""]
+      : ["  - /bin/sh -c \"/usr/bin/touch /etc/cloud/cloud-init.disabled\""]),
+  ];
+  return lines.join("\n") + "\n";
+}
